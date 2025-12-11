@@ -1,0 +1,53 @@
+# Dataset Preparation Configuration
+# ===================================
+# This config file specifies which MMOCR datasets to download and convert
+# to YOLOv8-Seg format for the TDDGenerator engine.
+
+# Datasets to download and convert
+# Use dataset names from MMOCR. Run `python -m dataprep.prepare_all --list` to see all.
+datasets:
+  # Standard datasets (recommended for training)
+  - icdar2013      # ~0.5 GB - ICDAR 2013 scene text
+  - icdar2015      # ~0.5 GB - ICDAR 2015 incidental scene text
+  - ctw1500        # ~0.8 GB - Curved text in the wild
+  - totaltext      # ~0.5 GB - Arbitrary-shaped text
+  
+  # Receipt/Document datasets
+  - sroie          # ~0.1 GB - Scanned receipts
+  - funsd          # ~0.05 GB - Form understanding
+  
+  # Additional datasets
+  - svt            # ~0.1 GB - Street View Text
+  - naf            # ~0.3 GB - NAF dataset
+  - wildreceipt    # ~0.2 GB - Wild receipts
+  
+  # Large datasets (uncomment if needed, requires more storage)
+  # - textocr      # ~7 GB - TextOCR dataset
+  # - cocotextv2   # ~13 GB - COCO Text v2
+  # - synthtext    # ~40 GB - Synthetic text (training only)
+
+# Output directory for converted YOLOv8-Seg datasets
+output_dir: ./datasets
+
+# MMOCR data directory (raw downloaded data)
+mmocr_data_dir: ./data
+
+# Number of parallel workers for conversion
+workers: 4
+
+# Processing options
+options:
+  # Skip download step (use existing MMOCR data)
+  skip_download: false
+  
+  # Skip conversion step (download only)
+  skip_convert: false
+  
+  # Include large datasets (>10GB)
+  include_large: false
+  
+  # Force re-download even if exists
+  force_download: false
+  
+  # Copy images to output directory (set false to save space)
+  copy_images: true

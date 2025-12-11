@@ -1,0 +1,17 @@
+# Dataset preparation dependencies
+
+# MMOCR for dataset download and preparation
+mmocr>=1.0.0
+mmengine>=0.8.0
+mmcv>=2.0.0
+mmdet>=3.0.0
+
+# Core utilities
+numpy>=1.24.0
+Pillow>=10.0.0
+tqdm>=4.66.0
+pyyaml>=6.0
+requests>=2.28.0
+
+# Optional: For faster json parsing
+orjson>=3.9.0
