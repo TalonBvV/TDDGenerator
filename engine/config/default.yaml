@@ -1,0 +1,51 @@
+# Default configuration for Text Detection Dataset Generator
+
+input:
+  dataset_dir: /path/to/datasets
+  wordlist: /path/to/words.txt
+  fonts_dir: /path/to/fonts
+
+output:
+  output_dir: /path/to/output
+  resolution: [1024, 1024]
+
+generation:
+  per_sample: 5
+  real_ratio: 0.5
+  seed: null
+
+models:
+  lama_checkpoint: big-lama
+  rmbg_model: briaai/RMBG-2.0
+  batch_size: 8
+  device: cuda
+
+text:
+  scale_min: 0.03
+  scale_max: 0.25
+  scale_bias: medium
+
+warp:
+  types:
+    - perspective
+    - curve
+    - arc
+    - sine_wave
+    - circular
+    - spiral
+    - freeform_polygon
+  intensity: moderate
+
+blending:
+  mode: intermediate
+  edge_blur: 1.5
+  shadow_opacity: 0.4
+
+augmentation:
+  probability: 0.5
+
+preview:
+  count: 10
+
+split:
+  val_ratio: 0.2
