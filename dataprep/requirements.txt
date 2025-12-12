@@ -2,7 +2,7 @@
 
 # MMOCR for dataset download and preparation (CPU-only)
 # Using mmcv-lite (pure-python, no CUDA ops) for Python 3.12 compatibility
-mmcv-lite==2.2.0
+mmcv-lite==2.1.0
 mmengine>=0.10.7,<0.11.0
 mmocr>=1.0.1
 mmdet>=3.3.0
