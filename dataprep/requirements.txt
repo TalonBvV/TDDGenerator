@@ -6,9 +6,8 @@
 torch==2.1.0+cpu
 torchvision==0.16.0+cpu
 
-# MMCV from OpenMMLab's prebuilt wheel index (CPU, PyTorch 2.1, Python 3.11)
---extra-index-url https://download.openmmlab.com/mmcv/dist/cpu/torch2.1.0/index.html
-mmcv==2.0.1
+# MMCV - direct wheel URL (pip prefers PyPI source over extra-index-url)
+https://download.openmmlab.com/mmcv/dist/cpu/torch2.1.0/mmcv-2.0.1-cp311-cp311-manylinux1_x86_64.whl
 
 # Other MM* packages (pure Python, no special index needed)
 mmengine>=0.7.1,<1.0.0
