@@ -1,13 +1,13 @@
 # Dataset preparation dependencies
 # Requires: Python 3.11, Linux x86_64
 
-# PyTorch 2.1 CPU (required - mmcv only has prebuilt wheels up to PyTorch 2.1)
+# PyTorch 2.0 CPU (required - mmcv 2.0.1 wheels only available for torch2.0.0)
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.1.0+cpu
-torchvision==0.16.0+cpu
+torch==2.0.0+cpu
+torchvision==0.15.1+cpu
 
-# MMCV - direct wheel URL (pip prefers PyPI source over extra-index-url)
-https://download.openmmlab.com/mmcv/dist/cpu/torch2.1.0/mmcv-2.0.1-cp311-cp311-manylinux1_x86_64.whl
+# MMCV - direct wheel URL (must match PyTorch version)
+https://download.openmmlab.com/mmcv/dist/cpu/torch2.0.0/mmcv-2.0.1-cp311-cp311-manylinux1_x86_64.whl
 
 # Other MM* packages (pure Python, no special index needed)
 mmengine>=0.7.1,<1.0.0
