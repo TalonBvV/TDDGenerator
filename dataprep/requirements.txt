@@ -1,9 +1,9 @@
 # Dataset preparation dependencies
 
 # MMOCR for dataset download and preparation (CPU-only)
-# Using mmcv-lite (pure-python, no CUDA ops) for Python 3.12 compatibility
+# Python 3.11 required - prebuilt mmcv wheels available
 # Version constraints from MMOCR 1.0.1: mmcv>=2.0.0rc4,<2.1.0 | mmdet>=3.0.0rc5,<3.2.0 | mmengine>=0.7.1,<1.1.0
-mmcv-lite==2.0.1
+mmcv>=2.0.0,<2.1.0
 mmengine>=0.7.1,<1.0.0
 mmdet>=3.1.0,<3.2.0
 mmocr==1.0.1
