@@ -1,423 +1,385 @@
 """
-MMOCR Dataset Downloader
+Standalone Dataset Downloader
 
-Downloads text detection datasets using MMOCR's dataset preparation tools.
-Supports all MMOCR-compatible text detection datasets.
+Downloads text detection datasets without any MM* dependencies.
+Uses requests for HTTP downloads and standard library for archive extraction.
 """
 
+import hashlib
 import logging
 import os
-import subprocess
-import sys
+import re
+import shutil
+import tarfile
+import zipfile
 from pathlib import Path
-from typing import List, Optional, Dict, Any
-from dataclasses import dataclass, field
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List, Optional, Tuple
 
+import requests
 from tqdm import tqdm
+
+from .dataset_configs import (
+    DatasetConfig,
+    FileConfig,
+    SplitConfig,
+    get_available_datasets,
+    get_dataset_config,
+)
 
 logger = logging.getLogger("dataprep.download")
 
 
-@dataclass
-class DatasetConfig:
-    """Configuration for a single dataset."""
-    name: str
-    task: str = "textdet"
-    splits: List[str] = field(default_factory=lambda: ["train", "test"])
-    size_estimate_gb: float = 1.0
-    requires_manual: bool = False
-    manual_instructions: str = ""
+class DatasetDownloader:
+    """Standalone dataset downloader with no MM* dependencies."""
 
-
-# All supported text detection datasets from MMOCR
-TEXTDET_DATASETS: Dict[str, DatasetConfig] = {
-    # ICDAR Series - Competition datasets
-    "icdar2013": DatasetConfig(
-        name="icdar2013",
-        size_estimate_gb=0.5,
-        requires_manual=False,
-    ),
-    "icdar2015": DatasetConfig(
-        name="icdar2015",
-        size_estimate_gb=0.5,
-        requires_manual=False,
-    ),
-    
-    # Curved/Arbitrary text datasets
-    "ctw1500": DatasetConfig(
-        name="ctw1500",
-        size_estimate_gb=0.8,
-        requires_manual=False,
-    ),
-    "totaltext": DatasetConfig(
-        name="totaltext",
-        size_estimate_gb=0.5,
-        requires_manual=False,
-    ),
-    
-    # Large-scale datasets
-    "cocotextv2": DatasetConfig(
-        name="cocotextv2",
-        size_estimate_gb=13.0,
-        requires_manual=False,
-    ),
-    "synthtext": DatasetConfig(
-        name="synthtext",
-        size_estimate_gb=40.0,
-        splits=["train"],  # SynthText has no test split
-        requires_manual=False,
-    ),
-    
-    # Receipt/Document datasets
-    "sroie": DatasetConfig(
-        name="sroie",
-        size_estimate_gb=0.1,
-        requires_manual=False,
-    ),
-    "funsd": DatasetConfig(
-        name="funsd",
-        size_estimate_gb=0.05,
-        requires_manual=False,
-    ),
-    
-    # Other datasets
-    "naf": DatasetConfig(
-        name="naf",
-        size_estimate_gb=0.3,
-        requires_manual=False,
-    ),
-    "svt": DatasetConfig(
-        name="svt",
-        size_estimate_gb=0.1,
-        splits=["train"],  # SVT has only training set in preparer
-        requires_manual=False,
-    ),
-    "textocr": DatasetConfig(
-        name="textocr",
-        size_estimate_gb=7.0,
-        requires_manual=False,
-    ),
-    "wildreceipt": DatasetConfig(
-        name="wildreceipt",
-        size_estimate_gb=0.2,
-        requires_manual=False,
-    ),
-}
-
-
-class MMOCRDownloader:
-    """Downloads datasets using MMOCR's dataset preparation tools."""
-    
     def __init__(
         self,
         data_dir: Path,
-        mmocr_path: Optional[Path] = None,
         cache_dir: Optional[Path] = None,
     ):
         """
-        Initialize the MMOCR downloader.
-        
+        Initialize downloader.
+
         Args:
-            data_dir: Directory where datasets will be downloaded
-            mmocr_path: Path to MMOCR installation (auto-detected if not provided)
-            cache_dir: Cache directory for downloads
+            data_dir: Directory where datasets will be stored
+            cache_dir: Cache directory for downloads (default: data_dir/cache)
         """
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        
+
         self.cache_dir = Path(cache_dir) if cache_dir else self.data_dir / "cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Try to find MMOCR installation
-        self.mmocr_path = self._find_mmocr_path(mmocr_path)
-        
+
         logger.info(f"Data directory: {self.data_dir}")
         logger.info(f"Cache directory: {self.cache_dir}")
-        
-    def _find_mmocr_path(self, provided_path: Optional[Path]) -> Optional[Path]:
-        """Find MMOCR installation path."""
-        if provided_path and provided_path.exists():
-            return Path(provided_path)
-        
-        # Try to find via pip
-        try:
-            import mmocr
-            return Path(mmocr.__file__).parent.parent
-        except ImportError:
-            logger.warning("MMOCR not found in Python environment")
-            return None
-    
-    def get_available_datasets(self) -> List[str]:
-        """Get list of available datasets."""
-        return list(TEXTDET_DATASETS.keys())
-    
-    def get_dataset_info(self, name: str) -> Optional[DatasetConfig]:
-        """Get configuration for a specific dataset."""
-        return TEXTDET_DATASETS.get(name.lower())
-    
-    def is_downloaded(self, dataset_name: str) -> bool:
-        """Check if a dataset is already downloaded."""
-        dataset_dir = self.data_dir / dataset_name
-        
-        if not dataset_dir.exists():
-            return False
-        
-        # Check for expected files
-        expected_files = [
-            "textdet_train.json",
-            "textdet_imgs/train",
-        ]
-        
-        for file in expected_files:
-            if not (dataset_dir / file).exists():
-                return False
-        
-        return True
-    
+
     def download_dataset(
         self,
         dataset_name: str,
+        splits: List[str] = None,
         force: bool = False,
-        splits: Optional[List[str]] = None,
     ) -> bool:
         """
         Download a single dataset.
-        
+
         Args:
-            dataset_name: Name of the dataset to download
+            dataset_name: Name of the dataset (e.g., "icdar2015")
+            splits: Splits to download (default: ["train", "test"])
             force: Force re-download even if exists
-            splits: Specific splits to download (default: all)
-            
+
         Returns:
-            True if successful, False otherwise
+            True if successful
         """
-        dataset_name = dataset_name.lower()
-        config = TEXTDET_DATASETS.get(dataset_name)
-        
+        config = get_dataset_config(dataset_name)
         if config is None:
             logger.error(f"Unknown dataset: {dataset_name}")
-            logger.info(f"Available datasets: {', '.join(self.get_available_datasets())}")
+            logger.info(f"Available: {', '.join(get_available_datasets())}")
             return False
-        
-        if config.requires_manual:
-            logger.warning(f"Dataset '{dataset_name}' requires manual download:")
-            logger.warning(config.manual_instructions)
-            return False
-        
-        if not force and self.is_downloaded(dataset_name):
-            logger.info(f"Dataset '{dataset_name}' already downloaded, skipping")
-            return True
-        
-        logger.info(f"Downloading dataset: {dataset_name} (~{config.size_estimate_gb:.1f} GB)")
-        
-        # Build the command for MMOCR's prepare_dataset.py
-        cmd = [
-            sys.executable,
-            "-m", "mmocr.datasets.preparers.prepare_dataset",
-            dataset_name,
-            "--task", config.task,
-        ]
-        
-        if splits:
-            cmd.extend(["--splits"] + splits)
-        
-        # Add data root
-        env = os.environ.copy()
-        env["MMOCR_DATA_ROOT"] = str(self.data_dir)
-        
-        try:
-            # Change to the data directory
-            result = subprocess.run(
-                cmd,
-                cwd=str(self.data_dir),
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=3600 * 4,  # 4 hour timeout for large datasets
-            )
-            
-            if result.returncode != 0:
-                logger.error(f"Failed to download {dataset_name}")
-                logger.error(f"stdout: {result.stdout}")
-                logger.error(f"stderr: {result.stderr}")
+
+        dataset_dir = self.data_dir / dataset_name
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+
+        if splits is None:
+            splits = ["train", "test"]
+
+        success = True
+        for split in splits:
+            split_config = getattr(config, split, None)
+            if split_config is None:
+                logger.warning(f"No {split} split for {dataset_name}")
+                continue
+
+            logger.info(f"Downloading {dataset_name} {split} split...")
+            if not self._download_split(dataset_dir, split_config, force):
+                success = False
+
+        return success
+
+    def _download_split(
+        self,
+        dataset_dir: Path,
+        split_config: SplitConfig,
+        force: bool,
+    ) -> bool:
+        """Download files for a dataset split."""
+        for file_cfg in split_config.files:
+            # Download file
+            download_path = self.cache_dir / file_cfg.save_name
+
+            if force or not self._check_integrity(download_path, file_cfg.md5):
+                if not self._download_file(file_cfg.url, download_path):
+                    return False
+
+            # Extract archive
+            if not self._extract_archive(download_path, dataset_dir):
                 return False
-            
-            logger.info(f"Successfully downloaded: {dataset_name}")
+
+            # Apply file mappings
+            for src, dst in file_cfg.mapping:
+                self._move_files(dataset_dir, src, dst)
+
+        return True
+
+    def _download_file(self, url: str, dst_path: Path) -> bool:
+        """Download a file with progress bar."""
+        logger.info(f"Downloading: {url}")
+        logger.info(f"To: {dst_path}")
+
+        try:
+            response = requests.get(url, stream=True, timeout=60)
+            response.raise_for_status()
+
+            total_size = int(response.headers.get("content-length", 0))
+
+            with open(dst_path, "wb") as f:
+                with tqdm(
+                    total=total_size,
+                    unit="B",
+                    unit_scale=True,
+                    desc=dst_path.name,
+                ) as pbar:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            pbar.update(len(chunk))
+
             return True
-            
-        except subprocess.TimeoutExpired:
-            logger.error(f"Timeout downloading {dataset_name}")
+
+        except requests.RequestException as e:
+            logger.error(f"Download failed: {e}")
             return False
+
+    def _check_integrity(self, path: Path, expected_md5: Optional[str]) -> bool:
+        """Check file integrity using MD5."""
+        if not path.exists():
+            return False
+
+        if expected_md5 is None:
+            return True  # No verification needed
+
+        with open(path, "rb") as f:
+            file_md5 = hashlib.md5(f.read()).hexdigest()
+
+        return file_md5 == expected_md5
+
+    def _extract_archive(self, src_path: Path, dst_dir: Path) -> bool:
+        """Extract zip or tar.gz archive."""
+        if not src_path.exists():
+            return False
+
+        name = src_path.name
+        
+        # Skip if not an archive
+        if not (name.endswith(".zip") or name.endswith(".tar.gz") or name.endswith(".tar")):
+            return True
+
+        # Check if already extracted
+        extract_marker = dst_dir / f".{src_path.stem}.extracted"
+        if extract_marker.exists():
+            logger.info(f"Already extracted: {name}")
+            return True
+
+        logger.info(f"Extracting: {name}")
+
+        try:
+            if name.endswith(".zip"):
+                with zipfile.ZipFile(src_path, "r") as zf:
+                    zf.extractall(dst_dir)
+            elif name.endswith(".tar.gz"):
+                with tarfile.open(src_path, "r:gz") as tf:
+                    tf.extractall(dst_dir)
+            elif name.endswith(".tar"):
+                with tarfile.open(src_path, "r:") as tf:
+                    tf.extractall(dst_dir)
+
+            # Mark as extracted
+            extract_marker.touch()
+            return True
+
         except Exception as e:
-            logger.error(f"Error downloading {dataset_name}: {e}")
+            logger.error(f"Extraction failed: {e}")
             return False
-    
+
+    def _move_files(self, base_dir: Path, src: str, dst: str) -> None:
+        """Move/rename files within dataset directory."""
+        src_path = base_dir / src
+        dst_path = base_dir / dst
+
+        if not src_path.exists():
+            return
+
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if dst_path.exists():
+            return  # Already moved
+
+        try:
+            shutil.move(str(src_path), str(dst_path))
+            logger.debug(f"Moved: {src} -> {dst}")
+        except Exception as e:
+            logger.warning(f"Failed to move {src}: {e}")
+
     def download_datasets(
         self,
         dataset_names: List[str],
+        splits: List[str] = None,
         force: bool = False,
-        workers: int = 1,
         skip_large: bool = True,
     ) -> Dict[str, bool]:
         """
         Download multiple datasets.
-        
+
         Args:
-            dataset_names: List of dataset names to download
+            dataset_names: List of dataset names
+            splits: Splits to download
             force: Force re-download
-            workers: Number of parallel downloads (not recommended > 2)
             skip_large: Skip datasets > 10GB
-            
+
         Returns:
             Dict mapping dataset names to success status
         """
         results = {}
-        
-        # Filter datasets
-        to_download = []
-        for name in dataset_names:
-            config = TEXTDET_DATASETS.get(name.lower())
+
+        for name in tqdm(dataset_names, desc="Downloading datasets"):
+            config = get_dataset_config(name)
             if config is None:
                 logger.warning(f"Unknown dataset: {name}")
                 results[name] = False
                 continue
-            
+
             if skip_large and config.size_estimate_gb > 10:
                 logger.info(f"Skipping large dataset: {name} (~{config.size_estimate_gb:.1f} GB)")
                 results[name] = False
                 continue
-            
-            to_download.append(name)
-        
-        if workers == 1:
-            # Sequential download
-            for name in tqdm(to_download, desc="Downloading datasets"):
-                results[name] = self.download_dataset(name, force=force)
-        else:
-            # Parallel download
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = {
-                    executor.submit(self.download_dataset, name, force): name
-                    for name in to_download
-                }
-                
-                for future in tqdm(as_completed(futures), total=len(futures), desc="Downloading"):
-                    name = futures[future]
-                    try:
-                        results[name] = future.result()
-                    except Exception as e:
-                        logger.error(f"Error downloading {name}: {e}")
-                        results[name] = False
-        
-        # Summary
-        success = sum(1 for v in results.values() if v)
-        logger.info(f"Downloaded {success}/{len(results)} datasets successfully")
-        
+
+            results[name] = self.download_dataset(name, splits, force)
+
+        success_count = sum(1 for v in results.values() if v)
+        logger.info(f"Downloaded {success_count}/{len(results)} datasets successfully")
+
         return results
-    
-    def download_all(
-        self,
-        force: bool = False,
-        skip_large: bool = True,
-        workers: int = 1,
-    ) -> Dict[str, bool]:
-        """
-        Download all supported datasets.
-        
-        Args:
-            force: Force re-download
-            skip_large: Skip datasets > 10GB (synthtext, cocotextv2, textocr)
-            workers: Number of parallel downloads
-            
-        Returns:
-            Dict mapping dataset names to success status
-        """
-        all_datasets = list(TEXTDET_DATASETS.keys())
-        return self.download_datasets(all_datasets, force=force, workers=workers, skip_large=skip_large)
+
+
+def get_image_annotation_pairs(
+    dataset_dir: Path,
+    split: str,
+    split_config: SplitConfig,
+) -> List[Tuple[Path, Path]]:
+    """
+    Get list of (image_path, annotation_path) pairs.
+
+    Args:
+        dataset_dir: Root directory of the dataset
+        split: Split name (train/test)
+        split_config: Configuration for this split
+
+    Returns:
+        List of (image_path, annotation_path) tuples
+    """
+    img_dir = dataset_dir / "images" / split
+    ann_dir = dataset_dir / "annotations" / split
+
+    if not img_dir.exists():
+        logger.warning(f"Image directory not found: {img_dir}")
+        return []
+
+    pairs = []
+    img_pattern = re.compile(split_config.img_pattern)
+
+    for img_path in img_dir.iterdir():
+        if not img_path.is_file():
+            continue
+
+        match = img_pattern.match(img_path.name)
+        if not match:
+            continue
+
+        # Get annotation filename from pattern
+        img_id = match.group(1)
+        ann_name = split_config.ann_pattern.format(img_id)
+        ann_path = ann_dir / ann_name
+
+        if ann_path.exists():
+            pairs.append((img_path, ann_path))
+
+    return pairs
 
 
 def main():
     """CLI entry point for dataset download."""
     import argparse
-    
+
     parser = argparse.ArgumentParser(
-        description="Download MMOCR text detection datasets"
+        description="Download text detection datasets (no MM* dependencies)"
     )
     parser.add_argument(
         "datasets",
         nargs="*",
         default=["all"],
-        help="Dataset names to download, or 'all' for all datasets"
+        help="Dataset names to download, or 'all' for all datasets",
     )
     parser.add_argument(
-        "--output-dir", "-o",
+        "--output-dir",
+        "-o",
         type=Path,
         default=Path("./data"),
-        help="Output directory for datasets (default: ./data)"
+        help="Output directory for datasets (default: ./data)",
     )
     parser.add_argument(
-        "--force", "-f",
+        "--force",
+        "-f",
         action="store_true",
-        help="Force re-download even if already exists"
+        help="Force re-download even if exists",
     )
     parser.add_argument(
         "--include-large",
         action="store_true",
-        help="Include large datasets (>10GB)"
-    )
-    parser.add_argument(
-        "--workers", "-w",
-        type=int,
-        default=1,
-        help="Number of parallel downloads"
+        help="Include large datasets (>10GB)",
     )
     parser.add_argument(
         "--list",
         action="store_true",
-        help="List available datasets and exit"
+        help="List available datasets and exit",
     )
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
-        help="Verbose output"
+        help="Verbose output",
     )
-    
+
     args = parser.parse_args()
-    
+
     # Configure logging
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
-    
-    downloader = MMOCRDownloader(data_dir=args.output_dir)
-    
+
     if args.list:
         print("\nAvailable text detection datasets:")
         print("-" * 50)
-        for name, config in sorted(TEXTDET_DATASETS.items()):
-            status = "✓" if downloader.is_downloaded(name) else " "
+        for name in get_available_datasets():
+            config = get_dataset_config(name)
             size = f"~{config.size_estimate_gb:.1f} GB"
-            manual = " (manual)" if config.requires_manual else ""
-            print(f"  [{status}] {name:15} {size:>10}{manual}")
+            print(f"  {name:15} {size:>10}")
         print()
         return 0
-    
-    # Determine which datasets to download
+
+    downloader = DatasetDownloader(data_dir=args.output_dir)
+
+    # Determine datasets to download
     if "all" in args.datasets:
-        dataset_names = list(TEXTDET_DATASETS.keys())
+        dataset_names = get_available_datasets()
     else:
         dataset_names = args.datasets
-    
-    # Download
+
     results = downloader.download_datasets(
         dataset_names,
         force=args.force,
-        workers=args.workers,
         skip_large=not args.include_large,
     )
-    
+
     # Print summary
     print("\n" + "=" * 50)
     print("Download Summary:")
@@ -425,9 +387,10 @@ def main():
     for name, success in sorted(results.items()):
         status = "✓ Success" if success else "✗ Failed"
         print(f"  {name:20} {status}")
-    
+
     return 0 if all(results.values()) else 1
 
 
 if __name__ == "__main__":
+    import sys
     sys.exit(main())

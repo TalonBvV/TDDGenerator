@@ -1,28 +1,17 @@
 # Dataset preparation dependencies
-# Requires: Python 3.11, Linux x86_64
-# NOTE: mmcv will be built from source (requires build tools: gcc, make, etc.)
+# Works with Python 3.8+ - no MM* dependencies!
 
-# PyTorch 2.1 CPU
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.1.0+cpu
-torchvision==0.16.0+cpu
-
-# OpenMMLab packages
-# mmcv 2.1.0 is compatible with PyTorch 2.1 and mmdet <3.2.0
-mmcv==2.1.0
-mmengine>=0.7.1,<1.0.0
-mmdet>=3.1.0,<3.2.0
-mmocr==1.0.1
+# HTTP downloads with progress
+requests>=2.28.0,<3.0.0
 
 # Core utilities
-numpy>=1.24.0,<2.0.0
+numpy>=1.24.0,<3.0.0
 Pillow>=10.0.0,<13.0.0
 tqdm>=4.66.0,<5.0.0
 pyyaml>=6.0,<7.0.0
-requests>=2.28.0,<3.0.0
 
 # Optional: For faster json parsing
 orjson>=3.9.0,<4.0.0
 
-# Additional dependencies
+# Image processing
 opencv-python>=4.9.0,<5.0.0

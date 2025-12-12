@@ -1,8 +1,10 @@
 """
 Dataset Preparation - Main Entry Point
 
-Complete pipeline for downloading MMOCR text detection datasets and
+Complete pipeline for downloading text detection datasets and
 converting them to YOLOv8-Seg format for the TDDGenerator engine.
+
+NO MM* DEPENDENCIES - uses standalone download and parsing.
 
 Usage:
     # Download and convert all standard datasets
@@ -14,24 +16,32 @@ Usage:
     # Convert already downloaded data (skip download)
     python -m dataprep.prepare_all --skip-download --output-dir ./datasets
     
-    # Include large datasets (synthtext ~40GB, cocotextv2 ~13GB)
+    # Include large datasets
     python -m dataprep.prepare_all --include-large --output-dir ./datasets
 """
 
 import argparse
-import logging
-import sys
 import json
-import yaml
-from pathlib import Path
+import logging
+import shutil
+import sys
+from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import List, Dict, Any, Optional
-from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
+import yaml
+from PIL import Image
 from tqdm import tqdm
 
-from .download_datasets import MMOCRDownloader, TEXTDET_DATASETS
-from .convert_to_yolo import MMOCRToYOLOConverter, ConversionStats
+from .dataset_configs import (
+    DATASETS,
+    DatasetConfig,
+    get_available_datasets,
+    get_dataset_config,
+)
+from .download_datasets import DatasetDownloader, get_image_annotation_pairs
+from .parsers import get_parser
 
 logger = logging.getLogger("dataprep.main")
 
@@ -39,13 +49,14 @@ logger = logging.getLogger("dataprep.main")
 @dataclass
 class PrepareConfig:
     """Configuration for dataset preparation."""
+
     # Datasets to process
     datasets: List[str] = None
-    
+
     # Directories
     output_dir: Path = Path("./datasets")
-    mmocr_data_dir: Path = Path("./data")
-    
+    data_dir: Path = Path("./data")
+
     # Options
     workers: int = 4
     skip_download: bool = False
@@ -53,53 +64,57 @@ class PrepareConfig:
     include_large: bool = False
     force_download: bool = False
     copy_images: bool = True
-    
+
     def __post_init__(self):
         if self.datasets is None:
             self.datasets = self._get_default_datasets()
         self.output_dir = Path(self.output_dir)
-        self.mmocr_data_dir = Path(self.mmocr_data_dir)
-    
+        self.data_dir = Path(self.data_dir)
+
     def _get_default_datasets(self) -> List[str]:
         """Get default (non-large) datasets."""
         return [
-            name for name, config in TEXTDET_DATASETS.items()
+            name
+            for name, config in DATASETS.items()
             if config.size_estimate_gb <= 10
         ]
-    
+
     @classmethod
     def from_yaml(cls, path: Path) -> "PrepareConfig":
         """Load configuration from YAML file."""
         with open(path, "r") as f:
             data = yaml.safe_load(f)
-        
+
         # Handle nested structure
         config_dict = {}
-        
+
         if "datasets" in data:
             config_dict["datasets"] = data["datasets"]
         if "output_dir" in data:
             config_dict["output_dir"] = data["output_dir"]
-        if "mmocr_data_dir" in data:
-            config_dict["mmocr_data_dir"] = data["mmocr_data_dir"]
+        if "data_dir" in data:
+            config_dict["data_dir"] = data["data_dir"]
         if "workers" in data:
             config_dict["workers"] = data["workers"]
         if "options" in data:
             options = data["options"]
-            config_dict.update({
-                "skip_download": options.get("skip_download", False),
-                "skip_convert": options.get("skip_convert", False),
-                "include_large": options.get("include_large", False),
-                "force_download": options.get("force_download", False),
-                "copy_images": options.get("copy_images", True),
-            })
-        
+            config_dict.update(
+                {
+                    "skip_download": options.get("skip_download", False),
+                    "skip_convert": options.get("skip_convert", False),
+                    "include_large": options.get("include_large", False),
+                    "force_download": options.get("force_download", False),
+                    "copy_images": options.get("copy_images", True),
+                }
+            )
+
         return cls(**config_dict)
 
 
 @dataclass
 class PrepareResult:
     """Results from dataset preparation."""
+
     timestamp: str
     config: Dict[str, Any]
     download_results: Dict[str, bool]
@@ -111,23 +126,23 @@ class PrepareResult:
 
 class DatasetPreparer:
     """Main orchestrator for dataset preparation."""
-    
+
     def __init__(self, config: PrepareConfig):
         self.config = config
-        
+
         # Create directories
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
-        self.config.mmocr_data_dir.mkdir(parents=True, exist_ok=True)
-        
+        self.config.data_dir.mkdir(parents=True, exist_ok=True)
+
         # Initialize downloader
-        self.downloader = MMOCRDownloader(
-            data_dir=self.config.mmocr_data_dir,
+        self.downloader = DatasetDownloader(
+            data_dir=self.config.data_dir,
         )
-    
+
     def prepare(self) -> PrepareResult:
         """
         Run the full preparation pipeline.
-        
+
         Returns:
             PrepareResult with all results and statistics
         """
@@ -137,45 +152,45 @@ class DatasetPreparer:
             download_results={},
             conversion_results={},
         )
-        
+
         # Determine datasets to process
         datasets = self.config.datasets
         if "all" in datasets:
-            datasets = list(TEXTDET_DATASETS.keys())
+            datasets = get_available_datasets()
             if not self.config.include_large:
                 datasets = [
-                    d for d in datasets 
-                    if TEXTDET_DATASETS[d].size_estimate_gb <= 10
+                    d
+                    for d in datasets
+                    if DATASETS[d].size_estimate_gb <= 10
                 ]
-        
+
         logger.info(f"Preparing {len(datasets)} dataset(s): {', '.join(datasets)}")
-        
+
         # Step 1: Download
         if not self.config.skip_download:
             logger.info("\n" + "=" * 60)
             logger.info("STEP 1: Downloading datasets")
             logger.info("=" * 60)
-            
+
             result.download_results = self.downloader.download_datasets(
                 dataset_names=datasets,
                 force=self.config.force_download,
-                workers=1,  # Sequential downloads are more reliable
                 skip_large=not self.config.include_large,
             )
         else:
             logger.info("Skipping download step")
             result.download_results = {d: True for d in datasets}
-        
+
         # Step 2: Convert
         if not self.config.skip_convert:
             logger.info("\n" + "=" * 60)
             logger.info("STEP 2: Converting to YOLOv8-Seg format")
             logger.info("=" * 60)
-            
+
             for dataset_name in tqdm(datasets, desc="Converting"):
                 # Check if dataset was downloaded/exists
-                dataset_dir = self.config.mmocr_data_dir / dataset_name
-                
+                dataset_dir = self.config.data_dir / dataset_name
+
                 if not dataset_dir.exists():
                     logger.warning(f"Dataset directory not found: {dataset_dir}")
                     result.conversion_results[dataset_name] = {
@@ -183,32 +198,20 @@ class DatasetPreparer:
                         "error": "Directory not found",
                     }
                     continue
-                
+
                 # Output directory for this dataset
                 output_dir = self.config.output_dir / dataset_name
-                
+
                 try:
-                    converter = MMOCRToYOLOConverter(
-                        input_dir=dataset_dir,
-                        output_dir=output_dir,
-                        copy_images=self.config.copy_images,
-                        workers=self.config.workers,
+                    stats = self._convert_dataset(
+                        dataset_name, dataset_dir, output_dir
                     )
-                    
-                    stats = converter.convert()
-                    
-                    result.conversion_results[dataset_name] = {
-                        "success": stats.images_processed > 0,
-                        "images_processed": stats.images_processed,
-                        "images_skipped": stats.images_skipped,
-                        "polygons_converted": stats.polygons_converted,
-                        "polygons_ignored": stats.polygons_ignored,
-                        "errors": len(stats.errors),
-                    }
-                    
-                    result.total_images += stats.images_processed
-                    result.total_polygons += stats.polygons_converted
-                    
+
+                    result.conversion_results[dataset_name] = stats
+
+                    result.total_images += stats.get("images_processed", 0)
+                    result.total_polygons += stats.get("polygons_converted", 0)
+
                 except Exception as e:
                     logger.error(f"Failed to convert {dataset_name}: {e}")
                     result.conversion_results[dataset_name] = {
@@ -217,20 +220,115 @@ class DatasetPreparer:
                     }
         else:
             logger.info("Skipping conversion step")
-        
+
         # Determine overall success
-        result.success = (
-            all(result.download_results.values()) and
-            all(r.get("success", False) for r in result.conversion_results.values())
+        result.success = all(result.download_results.values()) and all(
+            r.get("success", False) for r in result.conversion_results.values()
         )
-        
+
         return result
-    
-    def save_report(self, result: PrepareResult, output_path: Optional[Path] = None) -> Path:
+
+    def _convert_dataset(
+        self,
+        dataset_name: str,
+        input_dir: Path,
+        output_dir: Path,
+    ) -> Dict[str, Any]:
+        """Convert a single dataset to YOLO format."""
+        config = get_dataset_config(dataset_name)
+        if config is None:
+            return {"success": False, "error": "Unknown dataset"}
+
+        stats = {
+            "success": False,
+            "images_processed": 0,
+            "polygons_converted": 0,
+            "errors": 0,
+        }
+
+        # Process each split
+        for split_name in ["train", "test"]:
+            split_config = getattr(config, split_name, None)
+            if split_config is None:
+                continue
+
+            # Get parser
+            try:
+                parser_cls = get_parser(split_config.parser_type)
+                parser = parser_cls()
+            except ValueError as e:
+                logger.warning(f"Parser error for {dataset_name} {split_name}: {e}")
+                continue
+
+            # Get image-annotation pairs
+            pairs = get_image_annotation_pairs(input_dir, split_name, split_config)
+
+            if not pairs:
+                logger.warning(f"No image-annotation pairs found for {dataset_name}/{split_name}")
+                continue
+
+            # Create output directories
+            split_output = output_dir / split_name
+            images_output = split_output / "images"
+            labels_output = split_output / "labels"
+            images_output.mkdir(parents=True, exist_ok=True)
+            labels_output.mkdir(parents=True, exist_ok=True)
+
+            # Process each pair
+            for img_path, ann_path in pairs:
+                try:
+                    # Parse annotations
+                    instances = parser.parse_file(ann_path)
+
+                    if not instances:
+                        continue
+
+                    # Get image dimensions
+                    with Image.open(img_path) as img:
+                        width, height = img.size
+
+                    # Generate YOLO labels
+                    label_lines = []
+                    for inst in instances:
+                        if inst.ignore:
+                            continue
+
+                        # Normalize polygon
+                        points = inst.to_normalized(width, height)
+
+                        # Format: class_id x1 y1 x2 y2 ...
+                        coords = " ".join(f"{x:.6f} {y:.6f}" for x, y in points)
+                        label_lines.append(f"0 {coords}")
+
+                        stats["polygons_converted"] += 1
+
+                    # Write label file
+                    label_path = labels_output / f"{img_path.stem}.txt"
+                    with open(label_path, "w") as f:
+                        f.write("\n".join(label_lines))
+
+                    # Copy image if requested
+                    if self.config.copy_images:
+                        dst_img = images_output / img_path.name
+                        if not dst_img.exists():
+                            shutil.copy2(img_path, dst_img)
+
+                    stats["images_processed"] += 1
+
+                except Exception as e:
+                    logger.debug(f"Error processing {img_path}: {e}")
+                    stats["errors"] += 1
+
+        stats["success"] = stats["images_processed"] > 0
+        return stats
+
+    def save_report(
+        self, result: PrepareResult, output_path: Optional[Path] = None
+    ) -> Path:
         """Save preparation report to JSON file."""
         if output_path is None:
             output_path = self.config.output_dir / "prepare_report.json"
-        
+
         # Convert result to serializable format
         report = {
             "timestamp": result.timestamp,
@@ -240,15 +338,15 @@ class DatasetPreparer:
             "config": {
                 "datasets": list(result.config.get("datasets", [])),
                 "output_dir": str(result.config.get("output_dir", "")),
-                "mmocr_data_dir": str(result.config.get("mmocr_data_dir", "")),
+                "data_dir": str(result.config.get("data_dir", "")),
             },
             "download_results": result.download_results,
             "conversion_results": result.conversion_results,
         }
-        
+
         with open(output_path, "w") as f:
             json.dump(report, f, indent=2)
-        
+
         logger.info(f"Report saved to: {output_path}")
         return output_path
 
@@ -256,7 +354,7 @@ class DatasetPreparer:
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Download and convert MMOCR datasets to YOLOv8-Seg format",
+        description="Download and convert text detection datasets to YOLOv8-Seg format (NO MM* DEPENDENCIES)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -269,79 +367,81 @@ Examples:
   # Skip download, just convert existing data
   python -m dataprep.prepare_all --skip-download --output-dir ./datasets
   
-  # Include large datasets (synthtext, cocotextv2, textocr)
+  # Include large datasets
   python -m dataprep.prepare_all --include-large --output-dir ./datasets
-  
-  # Use config file
-  python -m dataprep.prepare_all --config dataprep/config.yaml
-        """
+        """,
     )
-    
+
     parser.add_argument(
-        "--datasets", "-d",
+        "--datasets",
+        "-d",
         nargs="+",
         default=["all"],
-        help="Datasets to download/convert, or 'all' for all (default: all non-large)"
+        help="Datasets to download/convert, or 'all' for all (default: all non-large)",
     )
     parser.add_argument(
-        "--output-dir", "-o",
+        "--output-dir",
+        "-o",
         type=Path,
         default=Path("./datasets"),
-        help="Output directory for converted datasets (default: ./datasets)"
+        help="Output directory for converted datasets (default: ./datasets)",
     )
     parser.add_argument(
-        "--mmocr-data-dir",
+        "--data-dir",
         type=Path,
         default=Path("./data"),
-        help="Directory for MMOCR raw data (default: ./data)"
+        help="Directory for raw data (default: ./data)",
     )
     parser.add_argument(
-        "--config", "-c",
+        "--config",
+        "-c",
         type=Path,
-        help="Configuration file (YAML)"
+        help="Configuration file (YAML)",
     )
     parser.add_argument(
-        "--workers", "-w",
+        "--workers",
+        "-w",
         type=int,
         default=4,
-        help="Number of parallel workers for conversion (default: 4)"
+        help="Number of parallel workers for conversion (default: 4)",
     )
     parser.add_argument(
         "--skip-download",
         action="store_true",
-        help="Skip download step (use existing data)"
+        help="Skip download step (use existing data)",
     )
     parser.add_argument(
         "--skip-convert",
         action="store_true",
-        help="Skip conversion step (download only)"
+        help="Skip conversion step (download only)",
     )
     parser.add_argument(
         "--include-large",
         action="store_true",
-        help="Include large datasets (>10GB): synthtext, cocotextv2, textocr"
+        help="Include large datasets (>10GB)",
     )
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Force re-download even if datasets exist"
+        help="Force re-download even if datasets exist",
     )
     parser.add_argument(
         "--no-copy-images",
         action="store_true",
-        help="Don't copy images (create labels only)"
+        help="Don't copy images (create labels only)",
     )
     parser.add_argument(
         "--list",
         action="store_true",
-        help="List available datasets and exit"
+        help="List available datasets and exit",
     )
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
-        help="Verbose output"
+        help="Verbose output",
     )
-    
+
     return parser.parse_args()
 
 
@@ -350,24 +450,26 @@ def print_summary(result: PrepareResult):
     print("\n" + "=" * 60)
     print("DATASET PREPARATION COMPLETE")
     print("=" * 60)
-    
+
     print(f"\nTimestamp: {result.timestamp}")
     print(f"Success: {'✓ Yes' if result.success else '✗ No'}")
-    
-    print(f"\nDownloaded datasets: {sum(result.download_results.values())}/{len(result.download_results)}")
+
+    print(
+        f"\nDownloaded datasets: {sum(result.download_results.values())}/{len(result.download_results)}"
+    )
     for name, success in sorted(result.download_results.items()):
         status = "✓" if success else "✗"
         print(f"  [{status}] {name}")
-    
-    print(f"\nConverted datasets:")
+
+    print("\nConverted datasets:")
     for name, stats in sorted(result.conversion_results.items()):
         success = stats.get("success", False)
         status = "✓" if success else "✗"
         images = stats.get("images_processed", 0)
         polygons = stats.get("polygons_converted", 0)
         print(f"  [{status}] {name}: {images} images, {polygons} polygons")
-    
-    print(f"\nTotals:")
+
+    print("\nTotals:")
     print(f"  Images:   {result.total_images:,}")
     print(f"  Polygons: {result.total_polygons:,}")
     print()
@@ -376,24 +478,25 @@ def print_summary(result: PrepareResult):
 def main():
     """Main entry point."""
     args = parse_args()
-    
+
     # Configure logging
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
-    
+
     # List mode
     if args.list:
         print("\nAvailable text detection datasets:")
         print("-" * 60)
-        for name, config in sorted(TEXTDET_DATASETS.items()):
+        for name in sorted(get_available_datasets()):
+            config = get_dataset_config(name)
             size = f"~{config.size_estimate_gb:.1f} GB"
             large = " [LARGE]" if config.size_estimate_gb > 10 else ""
             print(f"  {name:20} {size:>10}{large}")
         print()
         return 0
-    
+
     # Load config
     if args.config:
         logger.info(f"Loading config from: {args.config}")
@@ -402,7 +505,7 @@ def main():
         if args.datasets != ["all"]:
             config.datasets = args.datasets
         config.output_dir = args.output_dir
-        config.mmocr_data_dir = args.mmocr_data_dir
+        config.data_dir = args.data_dir
         config.workers = args.workers
         config.skip_download = args.skip_download or config.skip_download
         config.skip_convert = args.skip_convert or config.skip_convert
@@ -413,7 +516,7 @@ def main():
         config = PrepareConfig(
             datasets=args.datasets,
             output_dir=args.output_dir,
-            mmocr_data_dir=args.mmocr_data_dir,
+            data_dir=args.data_dir,
             workers=args.workers,
             skip_download=args.skip_download,
             skip_convert=args.skip_convert,
@@ -421,17 +524,17 @@ def main():
             force_download=args.force,
             copy_images=not args.no_copy_images,
         )
-    
+
     # Run preparation
     preparer = DatasetPreparer(config)
     result = preparer.prepare()
-    
+
     # Save report
     preparer.save_report(result)
-    
+
     # Print summary
     print_summary(result)
-    
+
     return 0 if result.success else 1
 
 
