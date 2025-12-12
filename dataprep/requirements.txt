@@ -2,10 +2,11 @@
 
 # MMOCR for dataset download and preparation (CPU-only)
 # Using mmcv-lite (pure-python, no CUDA ops) for Python 3.12 compatibility
-mmcv-lite==2.1.0
-mmengine>=0.10.7,<0.11.0
-mmocr>=1.0.1
-mmdet>=3.3.0
+# Version constraints from MMOCR 1.0.1: mmcv>=2.0.0rc4,<2.1.0 | mmdet>=3.0.0rc5,<3.2.0 | mmengine>=0.7.1,<1.1.0
+mmcv-lite==2.0.1
+mmengine>=0.7.1,<1.0.0
+mmdet>=3.1.0,<3.2.0
+mmocr==1.0.1
 
 # Core utilities (Python 3.12 compatible, precompiled wheels available)
 numpy>=2.0.0,<3.0.0
