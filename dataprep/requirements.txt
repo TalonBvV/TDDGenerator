@@ -1,22 +1,29 @@
 # Dataset preparation dependencies
+# Requires: Python 3.11, Linux x86_64
 
-# MMOCR for dataset download and preparation (CPU-only)
-# Python 3.11 required - prebuilt mmcv wheels available
-# Version constraints from MMOCR 1.0.1: mmcv>=2.0.0rc4,<2.1.0 | mmdet>=3.0.0rc5,<3.2.0 | mmengine>=0.7.1,<1.1.0
-mmcv>=2.0.0,<2.1.0
+# PyTorch 2.1 CPU (required - mmcv only has prebuilt wheels up to PyTorch 2.1)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.1.0+cpu
+torchvision==0.16.0+cpu
+
+# MMCV from OpenMMLab's prebuilt wheel index (CPU, PyTorch 2.1, Python 3.11)
+--extra-index-url https://download.openmmlab.com/mmcv/dist/cpu/torch2.1.0/index.html
+mmcv==2.0.1
+
+# Other MM* packages (pure Python, no special index needed)
 mmengine>=0.7.1,<1.0.0
 mmdet>=3.1.0,<3.2.0
 mmocr==1.0.1
 
-# Core utilities (Python 3.12 compatible, precompiled wheels available)
-numpy>=2.0.0,<3.0.0
-Pillow>=10.4.0,<13.0.0
-tqdm>=4.66.5,<5.0.0
-pyyaml>=6.0.2,<7.0.0
-requests>=2.32.0,<3.0.0
+# Core utilities (Python 3.11 compatible, precompiled wheels available)
+numpy>=1.24.0,<2.0.0
+Pillow>=10.0.0,<13.0.0
+tqdm>=4.66.0,<5.0.0
+pyyaml>=6.0,<7.0.0
+requests>=2.28.0,<3.0.0
 
-# Optional: For faster json parsing (Rust-based, precompiled wheels)
-orjson>=3.10.0,<4.0.0
+# Optional: For faster json parsing
+orjson>=3.9.0,<4.0.0
 
-# Additional dependencies pulled by mmcv-lite
+# Additional dependencies
 opencv-python>=4.9.0,<5.0.0
